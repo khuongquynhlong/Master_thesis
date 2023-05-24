@@ -3,14 +3,37 @@
 Title: Does Statin Increase the Risk of Intracerebral Hemorrhage? An Emulation of a Randomized Controlled Trial Using Claims Data
 
 
-The script files include: 
 
-- 1
+**Will be updated**
 
-- 2
 
-- 3
+# The script files include: 
 
+## For data cleaning and variable creation
+
+
+## Descriptive statistics 
+
+
+
+
+## Main Analysis
+### Parameter estimates
+
+
+
+### Bootstrap
+
+
+## Sensitivity analysis
+
+### Sensitivity analysis for no-unmeasured confounders
+
+
+### Sensitivity analysis for different washout periods
+
+
+## Subgroup analysis
 
 
 
