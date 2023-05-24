@@ -8,12 +8,12 @@
 
 
 
-### For data cleaning and variable creation
+### 1. For data cleaning and variable creation
 
 - 1: 
 
 
-### Descriptive statistics 
+### 2. Descriptive statistics 
 
 - 1: 
 
@@ -22,7 +22,7 @@
 - 3:
 
 
-### Main Analysis
+### 3. Main Analysis
 #### Parameter estimates
 
 - 1:
@@ -39,7 +39,7 @@
 
 - 3: .......
 
-### Sensitivity analysis
+### 4. Sensitivity analysis
 
 #### Sensitivity analysis for no-unmeasured confounders
 
@@ -59,7 +59,7 @@
 - 3: .......
 
 
-### Subgroup analysis
+### 5. Subgroup analysis
 
 - 1:
 
