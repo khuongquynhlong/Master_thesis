@@ -1,0 +1,245 @@
+---
+title: "Sensitivity analysis for intention to treat with 1-month washout"
+author: "Khuong Quynh Long"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    highlight: pygments
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(magrittr)
+```
+
+```{r}
+#----------  Set up theme
+#===============================================================================
+mytheme <- function(...) {
+  theme_bw() +
+    theme(
+      plot.title = element_text(size = 14,color = "grey10",  face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(face = "italic", color = "gray10", size = 14),
+      plot.caption = element_text(face = "italic", size = 14, color = "gray10"),
+      axis.line = element_line(linetype = "solid"),
+      axis.text.x = element_text(color = "gray10", size = 14),
+      axis.text.y = element_text(color = "gray10", size = 14),
+      # axis.ticks = element_blank(),
+      axis.title.x = element_text(color = "gray10", size = 14),
+      axis.title.y = element_text(color = "gray10", size = 14),
+      panel.grid.minor = element_blank(),
+      # panel.grid.major = element_blank(),
+      plot.background = element_blank(),
+      panel.background = element_rect(fill = "white", color = NA),
+      legend.title = element_text(size = 14, face = "bold"),
+      legend.direction = "horizontal",
+      legend.position = "top",
+      legend.background = element_rect(fill = NA, color = NA),
+      legend.text = element_text(size = 14),
+      legend.key.width = unit(2, "line"),
+      strip.text = element_text(size = 14, face = "bold"),
+      strip.background = element_rect(fill = NA, color = NA)
+    )
+}
+```
+
+
+```{r}
+df <- readRDS("statin_clean_1m.rds")
+
+df %<>% mutate(visit_month2 = visit_month*visit_month)
+
+df %<>% group_by(id) %>%
+  mutate(max_visit = max(visit_month),
+         ICH_overall = max(ICH)) %>% ungroup()
+
+# Data time to event
+df_bs <- df %>% filter(visit_n == 1)
+
+# Sample size
+n <- length(unique(df$id))
+m <- 24
+```
+
+
+```{r}
+#----- Step 1. Data processing: interaction terms
+df %<>% mutate(
+  statin_init_t = statin_yn_b*visit_month,
+  statin_init_t2 = statin_yn_b*visit_month2
+)
+```
+
+
+**Step 1. Fit a pooled logistic  regression model with interaction terms between**
+
+```{r}
+#----- Step 1. Fit a pooled logistic  regression model with interaction terms
+adj_plr_ITT <- glm(ICH ~ visit_month + visit_month2 + statin_yn_b + 
+                        statin_init_t + statin_init_t2 + age_b + sex + hyper_b + 
+                        diabetes_b + insulin_b + nsaids_b +  COPD_b + corticoids_b + 
+                        depress_b + cancer_b + aneurysmis_b + osteoporosis_b,
+                        data = df, family=binomial())
+summary(adj_plr_ITT)
+exp(coef(adj_plr_ITT))
+```
+
+**Step 2. Create simulated data where everyone is treated**
+
+```{r}
+#----- Step 2: Calculate predicted event probability and survival probability for treated
+# Expand baseline so it contains a visit at each time point for every individual
+tr_ITT <- df_bs[rep(1:n, each = m),]
+tr_ITT$visit_month <- rep(0:(m-1), times = n) 
+tr_ITT %<>%
+  mutate(
+    # Recreate squared visit term
+    visit_month2 = visit_month*visit_month, 
+    # Set the treatment assignment to '1' for ALL individuals
+    statin_yn_b = 1, 
+    # recreate the interaction terms
+    statin_init_t = statin_yn_b*visit_month,
+    statin_init_t2 = statin_yn_b*visit_month2
+  )
+  
+# Calculate predicted survival density at each time point 
+# by subtracting the predicted value from 1
+tr_ITT$p <- 1 - predict(adj_plr_ITT, newdata = tr_ITT, type = 'response')
+
+# Survival probability (cumulative product of all time up to time t)
+tr_ITT <- tr_ITT %>%
+  arrange(id, visit_month)%>%
+  group_by(id) %>%
+  mutate(s = cumprod(p))
+```
+
+
+**Step 3. Create simulated data where everyone receives placebo**
+
+```{r}
+#----- Step 3: Calculate predicted event probability and survival probability for control
+# The same as step 2 but with all individuals receive statin_yn_b = 0
+ct_ITT <- df_bs[rep(1:n, each = m),]
+ct_ITT$visit_month <- rep(0:(m-1), times = n) 
+
+ct_ITT %<>%
+  mutate(
+    #recreate squared visit term
+    visit_month2 = visit_month*visit_month, 
+    # Set the treatment assignment to '0' for ALL individuals
+    statin_yn_b = 0, 
+    # recreate the interaction terms
+    statin_init_t = statin_yn_b*visit_month,
+    statin_init_t2 = statin_yn_b*visit_month2
+  )
+
+ct_ITT$p <- 1 - predict(adj_plr_ITT, newdata = ct_ITT, type = 'response')
+ct_ITT <- ct_ITT %>%
+  arrange(id, visit_month)%>%
+  group_by(id) %>%
+  mutate(s = cumprod(p))
+```
+
+**Step 4. Calculate standardized survival at each time**
+
+```{r}
+#----- Step 4: Calculate average counterfactual effects
+# Create concatenated dataset
+both_ITT <- bind_rows(tr_ITT, ct_ITT)
+both_ITT <- both_ITT[, c('s', 'statin_yn_b', 'visit_month')]
+
+# Calculate the mean survival at each visit within each treatment arm
+results_ITT <- both_ITT %>%
+  group_by(visit_month, statin_yn_b) %>%
+  summarise(mean_survival = mean(s, na.rm = T)) %>% ungroup()
+  
+# Add a row for each of Placebo and Treated where survival at time 0 is 1.
+results_ITT %<>% mutate(visit_month = visit_month + 1)
+results_ITT <- bind_rows(c(visit_month = 0, statin_yn_b = 0, mean_survival =  1),
+                         c(visit_month = 0, statin_yn_b = 1, mean_survival =  1), 
+                         results_ITT)
+                         
+# Add a variable that treats randomization as a factor
+results_ITT$init <- factor(results_ITT$statin_yn_b, labels = c("No statins", "Statins"))
+
+results_ITT %>% knitr::kable()
+```
+
+**Step 5: Plot the counterfactual survival curves, calculate the cHR and RD**
+
+```{r, fig.width=9, fig.height=6}
+#----- Step 5: Plot the counterfactual survival curves, calculate the cHR and RD
+#----- Counterfactual survival curve
+surv_plot_ITT <- results_ITT %>% 
+  ggplot(aes(x = visit_month, y = mean_survival)) +
+  geom_line(aes(colour = init)) +
+  scale_x_continuous(limits = c(0, 25), breaks=seq(0, 25, 2), expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0.5, 1), expand = c(0, 0)) +
+  scale_color_manual(values = c("#08519c", "#c9060a")) +
+  labs(colour = NULL,
+       x = "Time (months)",
+       y = "ICH free probability") +
+  mytheme()
+
+surv_plot_ITT
+
+
+png("ITT_surv_curve_1m.png", units="in", width = 9, height = 6, res = 500)
+surv_plot_ITT
+dev.off()
+```
+
+**Parameter estimates**
+
+```{r}
+#----- Parameter estimates
+# Transpose the data so survival in each treatment arm is separate
+wideres_ITT <- results_ITT %>% 
+  pivot_wider(id_cols = visit_month, 
+              names_from = init, 
+              values_from = mean_survival)
+              
+wideres_ITT %<>%
+  mutate(
+    RD = (1 - Treated) - (1 - Placebo),
+    logRatio = log(Treated)/log(Placebo),
+    CIR = (1 - Treated)/ (1 - Placebo)
+  )
+
+wideres_ITT$cHR <- sapply(0:m, FUN = function(x){
+  mean(wideres_ITT$logRatio[wideres_ITT$visit_month <= x], na.rm = T)
+  })
+
+wideres_ITT %>% round(3) %>% knitr::kable()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

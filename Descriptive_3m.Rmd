@@ -1,0 +1,154 @@
+---
+title: "Descriptive statistics for 3-month washout"
+author: "Khuong Quynh Long"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    highlight: pygments
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(table1)
+```
+
+
+
+
+```{r}
+df2 <- readRDS("statin_clean_3m.rds")
+
+df2 %<>%
+  select(ma_the, id, visit_n, date_in, date_b, visit_day, visit_month,
+         age, sex, ICH, TIA, stroke_ische, statin_yn, statin_yn_b,
+         CHD, heart_failure, PVD, atrial_fibri, heart_valve, sinus_node, 
+         renal_dys, anticoagulant, hepatic_dys, hepatitis, hypertension,
+         diabetes, obesity, other_heart, chro_pulmonary, COPD, cancer,
+         hypothyroidism, osteoporosis, depression, aneurysmis, hyper_med, 
+         corticoids, nsaids, aspirin, insulin, antidepress, hyper, depress) 
+
+dim(df2)
+```
+
+
+```{r}
+#---------- Descriptive statistics
+#-------------------------------------------------------------------------------
+psych::describe(df$visit_month)
+df %>% group_by(id) %>% filter(date_in == max(date_in)) %>% pull(visit_month) %>% hist()
+df %>% group_by(id) %>% filter(date_in == max(date_in)) %>% pull(visit_month) %>% round() %>% table()
+df %>% group_by(id) %>% filter(date_in == max(date_in)) %>% pull(visit_month) %>% round() %>% table() %>% prop.table()
+
+
+df2$age_gr <- cut(df2$age, breaks = c(0, 55, 65, 75, 85, Inf), levels = c(1, 2, 3, 4),
+                  labels = c("<55", "55-64", "65-74", "75-84", ">85"), right = F)
+
+df2 %<>% group_by(id) %>%
+  mutate(max_visit = max(visit_month),
+         ICH_overall = max(ICH)) %>% ungroup()
+
+df2 %<>% mutate(
+  statin_yn_b        = factor(statin_yn_b, labels = c("Non-initiators", "Initiators")),
+  sex                = factor(sex, labels = c("Male", "Female")),
+  hypertension       = factor(hypertension, labels = c("No", "Yes")),
+  hyper_med          = factor(hyper_med, labels = c("No", "Yes")),
+  diabetes           = factor(diabetes, labels = c("No", "Yes")),
+  insulin            = factor(insulin, labels = c("No", "Yes")),
+  obesity            = factor(obesity, labels = c("No", "Yes")),
+  other_heart        = factor(other_heart, labels = c("No", "Yes")),
+  chro_pulmonary     = factor(chro_pulmonary, labels = c("No", "Yes")),
+  COPD               = factor(COPD, labels = c("No", "Yes")),
+  cancer             = factor(cancer, labels = c("No", "Yes")),
+  hypothyroidism     = factor(hypothyroidism, labels = c("No", "Yes")),
+  osteoporosis       = factor(osteoporosis, labels = c("No", "Yes")),
+  depression         = factor(depression, labels = c("No", "Yes")),
+  antidepress        = factor(antidepress, labels = c("No", "Yes")),
+  aneurysmis         = factor(aneurysmis, labels = c("No", "Yes")),
+  corticoids         = factor(corticoids, labels = c("No", "Yes")),
+  nsaids             = factor(nsaids, labels = c("No", "Yes")),
+  aspirin            = factor(aspirin, labels = c("No", "Yes"))
+)
+
+
+
+label(df2$statin_yn_b)      <- "Treatment"
+label(df2$age)              <- "Age"
+label(df2$age_gr)           <- "Age group"
+label(df2$sex)              <- "Sex"
+label(df2$hypertension)     <- "Hypertension"
+label(df2$hyper_med)        <- "Hypertensive medicines"
+label(df2$diabetes)         <- "Diabetes"
+label(df2$insulin)          <- "Insulin use"
+label(df2$obesity)          <- "Obesity"
+label(df2$other_heart)      <- "Other heart diseases"
+label(df2$chro_pulmonary)   <- "Chronic pulmonary disease"
+label(df2$COPD)             <- "COPD"
+label(df2$cancer)           <- "Cancer"
+label(df2$hypothyroidism)   <- "Hypothyroidism"
+label(df2$osteoporosis)     <- "Osteoporosis"
+label(df2$depression)       <- "Depression"
+label(df2$antidepress)      <- "Antidepressant medicines"
+label(df2$aneurysmis)       <- "Aneurysmis"
+label(df2$corticoids)       <- "Corticosteroids"
+label(df2$nsaids)           <- "Aspirin"
+label(df2$aspirin)          <- "NSAIDs"
+label(df2$max_visit)        <- "Duration"
+
+
+# create a function to compute the p-value for continuous or categorical variables.
+
+pvalue <- function(x, ...) {
+  # Construct vectors of data y, and groups (strata) g
+  y <- unlist(x)
+  g <- factor(rep(1:length(x), times = sapply(x, length)))
+  if (is.numeric(y)) {
+    # For numeric variables, perform a standard 2-sample t-test
+    p <- t.test(y ~ g)$p.value
+  } else {
+    # For categorical variables, perform a chi-squared test of independence
+    p <- chisq.test(table(y, g))$p.value
+  }
+  # Format the p-value, using an HTML entity for the less-than sign.
+  # The initial empty string places the output on the line below the variable label.
+  c("", sub("<", "&lt;", format.pval(p, digits = 3, eps = 0.001)))
+}
+
+table1(~ age + age_gr + sex + hypertension + hyper_med + diabetes + insulin + 
+         other_heart + chro_pulmonary + COPD + cancer + hypothyroidism + 
+         osteoporosis + depression + antidepress + aneurysmis + 
+         corticoids + nsaids + aspirin + max_visit| statin_yn_b,
+       data = df2 %>% filter(visit_n == 1), overall = F, extra.col=list(`P-value`=pvalue))
+
+table1(~ age + age_gr + sex + hypertension + hyper_med + diabetes + insulin + 
+          other_heart + chro_pulmonary + COPD + cancer + hypothyroidism + 
+         osteoporosis + depression + antidepress + aneurysmis + 
+         corticoids + nsaids + aspirin | statin_yn_b,
+       data = df2, overall = F, extra.col=list(`P-value`=pvalue))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

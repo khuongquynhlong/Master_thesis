@@ -1,0 +1,119 @@
+---
+title: "Bootstrap CI sensitivity for no-unmeasured confounder assumption"
+author: "Khuong Quynh Long"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    highlight: pygments
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(magrittr)
+```
+
+```{r}
+# Output from bootstrap
+df <- readRDS("Boots_ITT_3m.rds") %>% slice(-1)
+head(df)
+```
+
+
+# Adjustment coefficient for sensitivity analysis
+
+```{r}
+B <- 1000
+
+adj_coef <- df$Placebo[df$visit_month==1]/df$Treated[df$visit_month==1]
+adj_coef_rep <- rep(adj_coef, each = 25)
+df$adj_coef <- adj_coef_rep
+
+df %<>% mutate(Adj_Treated = Treated*adj_coef)
+
+df$Adj_Treated[df$visit_month==0] <- 1
+
+df %<>% select(visit_month, Placebo, Treated, Adj_Treated)
+df$iteration <- rep(1:B, each = 25)
+
+
+# Create statistics
+df %<>%
+  mutate(
+    RD = (1 - Adj_Treated) - (1 - Placebo),
+    logRatio = log(Adj_Treated)/log(Placebo),
+    CIR = (1 - Adj_Treated)/ (1 - Placebo)
+  )
+
+df %<>% filter(visit_month != 0)
+
+df %<>% group_by(iteration) %>%
+  mutate(cHR = cummean(logRatio))
+```
+
+
+```{r}
+# RD
+RD_boot_12 <- df %>% filter(visit_month == 12) %>% pull(RD)
+RD_boot_24 <- df %>% filter(visit_month == 24) %>% pull(RD)
+
+
+# cHR
+cHR_boot_12 <- df %>% filter(visit_month == 12) %>% pull(cHR)
+cHR_boot_24 <- df %>% filter(visit_month == 24) %>% pull(cHR)
+```
+
+
+```{r}
+#----- 12 months
+# Risk difference
+quantile(RD_boot_12, probs = c(0.025, 0.975))
+# Hazard ratio
+quantile(cHR_boot_12, probs = c(0.025, 0.975))
+
+#----- 24 months
+# Risk difference
+quantile(RD_boot_24, probs = c(0.025, 0.975))
+# Hazard ratio
+quantile(cHR_boot_24, probs = c(0.025, 0.975))
+```
+
+
+
+# Histogram
+
+```{r}
+png("Sens_ITT_boot_3m.png", units="in", width = 9, height = 12, res = 500)
+par(mfrow = c(2, 2))
+hist(RD_boot_12)
+hist(cHR_boot_12)
+
+hist(RD_boot_24)
+hist(cHR_boot_24)
+par(mfrow = c(1, 1))
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

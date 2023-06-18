@@ -1,0 +1,382 @@
+---
+title: "Bootstrap PP with 3-month washout"
+author: "Khuong Quynh Long"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    highlight: pygments
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(magrittr)
+```
+
+
+
+# Data set up
+
+```{r, echo=FALSE}
+df <- readRDS("statin_clean_3m.rds")
+
+#----- Follow to baseline treatment
+df %<>% mutate(adhr = ifelse(statin_yn == statin_yn_b, 1, 0))
+
+#----- Create an indicator for censoring at the time crossover (maxVisit_cens)
+df %<>%
+  # Create censoring variable - indicate when individual stops adhering
+  mutate(
+    visit_month2 = visit_month*visit_month,
+    adh_change = ifelse(adhr == 0,1,0)
+  ) %>%
+  group_by(id)%>%
+  mutate(
+    # If all adherent --> max visit,
+    # If not adherent, take value of visit in previous visit
+    cens_visit = ifelse(is.na((which(adh_change %in% 1)[1])), max(visit_month), 
+                (visit_month[which(adh_change %in% 1)[1]-1])),
+    cens_new = ifelse(cens_visit == visit_month, 1, 
+                      ifelse(cens_visit < visit_month, NA , 0)),
+    maxVisit_cens = ifelse(cens_visit == -1, 0, cens_visit),
+    ICH_Overall_new = ifelse(is.na(cens_new), NA, 
+                        ifelse(is.na((which(ICH %in% 1)[1])), 0, 
+                          ifelse((which(ICH %in% 1)[1]-1) <= maxVisit_cens, 1, 0)))
+  ) %>% ungroup()
+```
+
+# Doing boostrap
+
+```{r}
+#===============================================================================
+df %<>% mutate(visit_month2 = visit_month*visit_month)
+
+uniq_id <- unique(df$id)
+
+uniq_id0 <- unique(df$id[df$statin_yn_b == 0])
+uniq_id1 <- unique(df$id[df$statin_yn_b == 1])
+
+n0 <- length(unique(df$id[df$statin_yn_b == 0]))
+n1 <- length(unique(df$id[df$statin_yn_b == 1]))
+
+n <- length(unique(df$id))
+m <- 24
+
+n; n1; n0
+
+# Check
+n == n0 + n1
+```
+
+
+
+
+```{r}
+B <- 1000
+
+# Set up dataframe to store all estimates across different iterations
+tab_PP_boot <- data.frame(
+  visit_month = NA,
+  Placebo = NA,
+  Treated = NA,
+  RD = NA, 
+  logRatio = NA,
+  CIR = NA,
+  cHR = NA
+)
+
+
+set.seed(12345)
+for (i in seq(B)) {
+  
+  # Sampling ID
+  df_boot0 <- data.frame(id = sample(uniq_id0, n0, replace = TRUE))
+  df_boot1 <- data.frame(id = sample(uniq_id1, n1, replace = TRUE))
+  df_boot <- rbind(df_boot0, df_boot1)
+
+  # Merge with original data with bootstrap ID
+  df_boot %<>% left_join(df, by = "id")
+  
+  df_boot %<>% arrange(id, date_in)
+  
+  # Take baseline data frame
+  df_boot_bs <- df_boot %>% filter(visit_n == 1)
+  
+  # Take data frame with no baseline
+  df_uncens <- df_boot %>% filter(visit_month > 0)
+  
+  #----- Data processing: interaction terms
+  df_boot %<>% mutate(
+    statin_init_t = statin_yn_b*visit_month,
+    statin_init_t2 = statin_yn_b*visit_month2
+  )
+  
+  #----- Step 1: Weights creation
+  #--- Numerator (only covariates at baseline)
+  # Treatment initiation arm
+  nFit_1 <- glm(adhr ~ visit_month + visit_month2 + age_b + sex +
+                  hyper_b + diabetes_b + insulin_b + nsaids_b + COPD_b + 
+                  corticoids_b + depress_b + cancer_b + aneurysmis_b + osteoporosis_b,
+                data = df_uncens[df_uncens$statin_yn_b == 1, ], family = binomial())
+  
+  # Control arm
+  nFit_0 <- glm(adhr ~ visit_month + visit_month2 + age_b + sex +
+                  hyper_b + diabetes_b + insulin_b + nsaids_b + COPD_b + 
+                  corticoids_b + depress_b + cancer_b + aneurysmis_b + osteoporosis_b,
+                data = df_uncens[df_uncens$statin_yn_b == 0, ], family = binomial())
+  
+  # Create predicted probability at each time point 
+  df_boot$pnum_1 <- predict(nFit_1, newdata = df_boot, type = 'response')
+  df_boot$pnum_0 <- predict(nFit_0, newdata = df_boot, type = 'response')
+  
+  gc()
+  
+  #--- Denominator (covariates at baseline and time-varying covariates)
+  # Treatment initiation arm
+  dFit_1 <- glm(adhr ~ visit_month + visit_month2 + age_b + sex +
+                  hyper_b + diabetes_b + insulin_b + nsaids_b + COPD_b + 
+                  corticoids_b + depress_b + cancer_b + aneurysmis_b + osteoporosis_b +
+                  age + hyper + diabetes + insulin + nsaid + COPD + 
+                  corticoids + depress + cancer + aneurysmis + osteoporosis,
+                data = df_uncens[df_uncens$statin_yn_b == 1, ], family = binomial())
+                
+  # Control arm
+  dFit_0 <- glm(adhr ~ visit_month + visit_month2 + age_b + sex +
+                  hyper_b + diabetes_b + insulin_b + nsaids_b + COPD_b + 
+                  corticoids_b + depress_b + cancer_b + aneurysmis_b + osteoporosis_b +
+                  age + hyper + diabetes + insulin + nsaid + COPD + 
+                  corticoids + depress + cancer + aneurysmis + osteoporosis,
+                data = df_uncens[df_uncens$statin_yn_b == 0, ], family = binomial())
+                
+  df_boot$pdenom_1 <-  predict(dFit_1, newdata = df_boot, type = 'response')
+  df_boot$pdenom_0 <-  predict(dFit_0, newdata = df_boot, type = 'response')
+  
+  #----- Create IPW
+  # Probability of receiving treatment A = a
+  df_boot %<>% 
+    mutate(
+      numCont = ifelse(statin_yn_b == 1, (adhr*pnum_1 + (1-adhr)*(1-pnum_1)), 
+                       (adhr*pnum_0 + (1-adhr)*(1-pnum_0))),
+      denCont = ifelse(statin_yn_b == 1, (adhr*pdenom_1 + (1-adhr)*(1-pdenom_1)), 
+                       (adhr*pdenom_0 + (1-adhr)*(1-pdenom_0))),
+      numCont = ifelse(visit_month == 0, 1, numCont),
+      denCont = ifelse(visit_month == 0, 1, denCont)
+    )
+  
+  # Cumulative probability up to time t
+  df_boot %<>%
+    group_by(id) %>% 
+    mutate(  
+      #numerator
+      k1_0 = cumprod(numCont),
+      k1_w = cumprod(denCont)
+    ) %>% ungroup()
+  
+  # Unstabilized and Stabilized weights
+  df_boot %<>% 
+    mutate(
+      stabw = k1_0/ k1_w,
+      unstabw = 1 /k1_w
+    )
+    
+  # To prevent high weights from too much influence, truncated above 97.5th percentile
+  threshold <- quantile(df_boot$stabw, 0.975) 
+  df_boot$stabw_t <- df_boot$stabw
+  df_boot$stabw_t[df_boot$stabw > threshold] <- threshold
+  
+  
+  #----- Weighted pooled logistic regression
+  df_boot %<>% mutate(
+    statin_init_t = statin_yn_b*visit_month,
+    statin_init_t2 = statin_yn_b*visit_month2
+  )
+  
+  wt_adj_plr_PP <- glm(ICH ~ visit_month + visit_month2 + statin_yn_b + 
+                        statin_init_t + statin_init_t2 + age_b + sex + hyper_b + 
+                        diabetes_b + insulin_b + nsaids_b +  COPD_b + corticoids_b + 
+                        depress_b + cancer_b + aneurysmis_b + osteoporosis_b,
+                     data = df_boot %>% filter(visit_month <= maxVisit_cens),
+                     weights = stabw_t,
+                     family = quasibinomial())
+  
+  
+  #----- Step 3. Create simulated data where everyone is treated
+  tr_PP_boot <- df_boot_bs[rep(1:n, each = m),]
+  tr_PP_boot$visit_month <- rep(0:(m-1), times=n)
+  tr_PP_boot %<>%
+    mutate(
+      # recreate squared visit term
+      visit_month2 = visit_month*visit_month, 
+      # Set the treatment assignment to '1' for each individual and
+      statin_yn_b = 1, 
+      # recreate the interaction terms
+      statin_init_t = statin_yn_b*visit_month,
+      statin_init_t2 = statin_yn_b*visit_month2
+    )
+  
+  # 'predict' returns predicted "density" of risk at each time
+  tr_PP_boot$p <- 1 - predict(wt_adj_plr_PP, newdata = tr_PP_boot, type='response')
+  tr_PP_boot <- tr_PP_boot[, c('id', 'p', 'statin_yn_b', 'visit_month')]
+  
+  # Calculate survival by taking the cumulative product by individual
+  tr_PP_boot <- tr_PP_boot %>%
+    arrange(id, visit_month)%>%
+    group_by(id) %>%
+    mutate(s = cumprod(p))
+  
+  #----- Step 4. Create simulated data where everyone receives placebo
+  ct_PP_boot <- df_boot_bs[rep(1:n, each = m),]
+  ct_PP_boot$visit_month <- rep(0:(m-1), times=n)
+  ct_PP_boot %<>%
+    mutate(
+      # recreate squared visit term
+      visit_month2 = visit_month*visit_month, 
+      # Set the treatment assignment to '1' for each individual and
+      statin_yn_b = 0, 
+      # recreate the interaction terms
+      statin_init_t = statin_yn_b*visit_month,
+      statin_init_t2 = statin_yn_b*visit_month2
+    )
+  
+  # 'predict' returns predicted "density" of risk at each time
+  ct_PP_boot$p <- 1 - predict(wt_adj_plr_PP, newdata=ct_PP_boot, type='response')
+  ct_PP_boot <- ct_PP_boot[, c('id', 'p', 'statin_yn_b', 'visit_month')]
+  
+  rm(wt_adj_plr_PP)
+  
+  # Calculate survival by taking the cumulative product by individual
+  ct_PP_boot <- ct_PP_boot %>%
+    arrange(id, visit_month)%>%
+    group_by(id) %>%
+    mutate(s = cumprod(p))
+  
+  #----- Step 5. Calculate standardized survival at each time
+  both_PP_boot <- bind_rows(tr_PP_boot, ct_PP_boot)
+  both_PP_boot <- both_PP_boot[, c('s', 'statin_yn_b', 'visit_month')]
+  
+  rm(tr_PP_boot)
+  rm(ct_PP_boot)
+  
+
+  # Calculate the mean survival at each visit within each treatment arm
+  results_PP_boot <- both_PP_boot %>%
+    group_by(visit_month, statin_yn_b) %>%
+    summarise(mean_survival = mean(s)) %>% ungroup()
+  
+  rm(both_PP_boot)
+  
+  # Edit results data frame to reflect that our estimates are for the END of the interval [t, t+1)
+  results_PP_boot %<>% mutate(visit_month = visit_month + 1)
+  results_PP_boot <- bind_rows(c(visit_month = 0, statin_yn_b = 0, mean_survival =  1),
+                                c(visit_month = 0, statin_yn_b = 1, mean_survival =  1),
+                                results_PP_boot)
+  
+  # Add a variable that treats randomization as a factor
+  results_PP_boot$init <- factor(results_PP_boot$statin_yn_b, labels = c("Placebo", "Treated"))
+
+  wideres_PP_boot <- results_PP_boot %>% pivot_wider(id_cols = visit_month, 
+                                                       names_from = init, 
+                                                       values_from = mean_survival)
+  
+  # Create summary statistics
+  wideres_PP_boot %<>%
+    mutate(
+      RD = (1 - Treated) - (1 - Placebo),
+      logRatio = log(Treated)/log(Placebo),
+      CIR = (1 - Treated)/ (1 - Placebo)
+    )
+  
+  wideres_PP_boot$logRatio[1] <- NA
+  wideres_PP_boot$cHR <- sapply(0:m, FUN = function(x){mean(wideres_PP_boot$logRatio[wideres_PP_boot$visit_month <= x], 
+                                                             na.rm=T)})
+  
+  tab_PP_boot <- tab_PP_boot %>% add_row(wideres_PP_boot)
+
+   gc()
+}
+
+rm(df_boot)
+rm(df_boot_bs)
+
+saveRDS(tab_PP_boot, "Boots_PP_3m.rds")
+```
+
+
+
+```{r}
+# RD
+RD_boot_12 <- tab_PP_boot %>% filter(visit_month == 12) %>% pull(RD)
+RD_boot_24 <- tab_PP_boot %>% filter(visit_month == 24) %>% pull(RD)
+
+# cHR
+cHR_boot_12 <- tab_PP_boot %>% filter(visit_month == 12) %>% pull(cHR)
+cHR_boot_24 <- tab_PP_boot %>% filter(visit_month == 24) %>% pull(cHR)
+```
+
+
+# Summary
+
+
+```{r}
+#----- 12 months
+# Risk difference
+quantile(RD_boot_12, probs = c(0.025, 0.975))
+# Hazard ratio
+quantile(cHR_boot_12, probs = c(0.025, 0.975))
+
+#----- 24 months
+# Risk difference
+quantile(RD_boot_24, probs = c(0.025, 0.975))
+# Hazard ratio
+quantile(cHR_boot_24, probs = c(0.025, 0.975))
+```
+
+
+# Histogram
+
+```{r}
+par(mfrow = c(2, 2))
+hist(RD_boot_12)
+hist(cHR_boot_12)
+
+hist(RD_boot_24)
+hist(cHR_boot_24)
+par(mfrow = c(1, 1))
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

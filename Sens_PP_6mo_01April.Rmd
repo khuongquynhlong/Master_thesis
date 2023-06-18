@@ -1,0 +1,383 @@
+---
+title: "Sensitivity analysis for Per Protocol with 6-month washout"
+author: "Khuong Quynh Long"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    highlight: pygments
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(magrittr)
+```
+
+```{r}
+#----------  Set up theme
+#===============================================================================
+mytheme <- function(...) {
+  theme_bw() +
+    theme(
+      plot.title = element_text(size = 14,color = "grey10",  face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(face = "italic", color = "gray10", size = 14),
+      plot.caption = element_text(face = "italic", size = 14, color = "gray10"),
+      axis.line = element_line(linetype = "solid"),
+      axis.text.x = element_text(color = "gray10", size = 14),
+      axis.text.y = element_text(color = "gray10", size = 14),
+      # axis.ticks = element_blank(),
+      axis.title.x = element_text(color = "gray10", size = 14),
+      axis.title.y = element_text(color = "gray10", size = 14),
+      panel.grid.minor = element_blank(),
+      # panel.grid.major = element_blank(),
+      plot.background = element_blank(),
+      panel.background = element_rect(fill = "white", color = NA),
+      legend.title = element_text(size = 14, face = "bold"),
+      legend.direction = "horizontal",
+      legend.position = "top",
+      legend.background = element_rect(fill = NA, color = NA),
+      legend.text = element_text(size = 14),
+      legend.key.width = unit(2, "line"),
+      strip.text = element_text(size = 14, face = "bold"),
+      strip.background = element_rect(fill = NA, color = NA)
+    )
+}
+```
+
+**Data set up**
+
+
+```{r}
+df <- readRDS("statin_clean_6m.rds")
+
+#----- Follow to baseline treatment
+df %<>% mutate(adhr = ifelse(statin_yn == statin_yn_b, 1, 0))
+
+#----- Create an indicator for censoring at the time crossover (maxVisit_cens)
+df %<>%
+  # Create censoring variable - indicate when individual stops adhering
+  mutate(
+    visit_month2 = visit_month*visit_month,
+    adh_change = ifelse(adhr == 0,1,0)
+  ) %>%
+  group_by(id)%>%
+  mutate(
+    # If all adherent --> max visit,
+    # If not adherent, take value of visit in previous visit
+    cens_visit = ifelse(is.na((which(adh_change %in% 1)[1])), max(visit_month), 
+                (visit_month[which(adh_change %in% 1)[1]-1])),
+    cens_new = ifelse(cens_visit == visit_month, 1, 
+                      ifelse(cens_visit < visit_month, NA , 0)),
+    maxVisit_cens = ifelse(cens_visit == -1, 0, cens_visit),
+    ICH_Overall_new = ifelse(is.na(cens_new), NA, 
+                        ifelse(is.na((which(ICH %in% 1)[1])), 0, 
+                          ifelse((which(ICH %in% 1)[1]-1) <= maxVisit_cens, 1, 0)))
+  ) %>% ungroup()
+
+#----- Create baseline data
+df_bs <- df %>% filter(visit_n == 1)
+```
+
+
+**Step 1: Weights creation**
+
+```{r}
+#-----Step 1: Weights creation
+# Data excluded baseline 
+df_uncens <- df %>% filter(visit_month > 0)
+
+#--- Numerator (only covariates at baseline)
+# Treatment initiation arm
+nFit_1 <- glm(adhr ~ visit_month + visit_month2 + age_b + sex +
+                hyper_b + diabetes_b + insulin_b + nsaids_b + COPD_b + 
+                corticoids_b + depress_b + cancer_b + aneurysmis_b + osteoporosis_b,
+              data = df_uncens[df_uncens$statin_yn_b == 1, ], family = binomial())
+
+# Control arm
+nFit_0 <- glm(adhr ~ visit_month + visit_month2 + age_b + sex +
+                hyper_b + diabetes_b + insulin_b + nsaids_b + COPD_b + 
+                corticoids_b + depress_b + cancer_b + aneurysmis_b + osteoporosis_b,
+              data = df_uncens[df_uncens$statin_yn_b == 0, ], family = binomial())
+
+# Create predicted probability at each time point 
+df$pnum_1 <- predict(nFit_1, newdata = df, type = 'response')
+df$pnum_0 <- predict(nFit_0, newdata = df, type = 'response')
+```
+
+
+```{r}
+#--- Denominator (covariates at baseline and time-varying covariates)
+# Treatment initiation arm
+dFit_1 <- glm(adhr ~ visit_month + visit_month2 + age_b + sex +
+                hyper_b + diabetes_b + insulin_b + nsaids_b + COPD_b + 
+                corticoids_b + depress_b + cancer_b + aneurysmis_b + osteoporosis_b +
+                age + hyper + diabetes + insulin + nsaid + COPD + 
+                corticoids + depress + cancer + aneurysmis + osteoporosis,
+              data = df_uncens[df_uncens$statin_yn_b == 1, ], family = binomial())
+              
+# Control arm
+dFit_0 <- glm(adhr ~ visit_month + visit_month2 + age_b + sex +
+                hyper_b + diabetes_b + insulin_b + nsaids_b + COPD_b + 
+                corticoids_b + depress_b + cancer_b + aneurysmis_b + osteoporosis_b +
+                age + hyper + diabetes + insulin + nsaid + COPD + 
+                corticoids + depress + cancer + aneurysmis + osteoporosis,
+              data = df_uncens[df_uncens$statin_yn_b == 0, ], family = binomial())
+              
+df$pdenom_1 <-  predict(dFit_1, newdata = df, type = 'response')
+df$pdenom_0 <-  predict(dFit_0, newdata = df, type = 'response')
+
+df %<>% arrange(id, visit_month)
+```
+
+**Check distribution of predictive probability**
+
+```{r}
+par(mfrow = c(2, 2))
+hist(df$pnum_1)
+hist(df$pnum_0)
+hist(df$pdenom_1)
+hist(df$pdenom_0)
+par(mfrow = c(1, 1))
+```
+
+
+
+```{r}
+#----- Create IPW
+# Probability of receiving treatment A = a
+df %<>% 
+  mutate(
+    numCont = ifelse(statin_yn_b == 1, (adhr*pnum_1 + (1-adhr)*(1-pnum_1)), 
+                     (adhr*pnum_0 + (1-adhr)*(1-pnum_0))),
+    denCont = ifelse(statin_yn_b == 1, (adhr*pdenom_1 + (1-adhr)*(1-pdenom_1)), 
+                     (adhr*pdenom_0 + (1-adhr)*(1-pdenom_0))),
+    numCont = ifelse(visit_month == 0, 1, numCont),
+    denCont = ifelse(visit_month == 0, 1, denCont)
+  )
+
+# Cumulative probability up to time t
+df %<>%
+  group_by(id) %>% 
+  mutate(  
+    #numerator
+    k1_0 = cumprod(numCont),
+    k1_w = cumprod(denCont)
+  ) %>% ungroup()
+
+# Unstabilized and Stabilized weights
+df %<>% 
+  mutate(
+    stabw = k1_0/ k1_w,
+    unstabw = 1 /k1_w
+  )
+```
+
+
+```{r}
+hist(df$stabw)
+
+# Check the weights
+summary(df$stabw); quantile(df$stabw, p=c(0.01, 0.10, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.995))
+summary(df$unstabw); quantile(df$unstabw, p=c(0.01, 0.10, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.995))
+
+# To prevent high weights from too much influence, truncated above 97.5th percentile
+threshold <- quantile(df$stabw, 0.975) 
+df$stabw_t <- df$stabw
+df$stabw_t[df$stabw > threshold] <- threshold
+```
+
+**Step 2: Weighted pooled logistic regression**
+
+```{r}
+#----- Weighted Survival Curves
+df %<>% mutate(
+  statin_init_t = statin_yn_b*visit_month,
+  statin_init_t2 = statin_yn_b*visit_month2
+)
+```
+
+
+```{r}
+# Similar to ITT, except that the stabilizing weights were incorporated, 
+# and the analysis was strictly applied to individuals 
+# who followed the initial treatment (visit_month <= maxVisit_cens)
+wt_adj_plr_PP <- glm(ICH ~ visit_month + visit_month2 + statin_yn_b + 
+                        statin_init_t + statin_init_t2 + age_b + sex + hyper_b + 
+                        diabetes_b + insulin_b + nsaids_b +  COPD_b + corticoids_b + 
+                        depress_b + cancer_b + aneurysmis_b + osteoporosis_b,
+                     data = df %>% filter(visit_month <= maxVisit_cens),
+                     weights = stabw_t,
+                     family = quasibinomial())
+summary(wt_adj_plr_PP)
+```
+
+
+```{r}
+# Step 1a. Create dataset with just baseline values 
+df_bs_new <- df %>% filter(visit_month == 0)
+```
+
+
+```{r}
+# Sample size
+n <- length(unique(df$id))
+m <- 24
+```
+
+
+**Step 3. Create simulated data where everyone adheres to each treatment**
+
+```{r}
+#----- Calculate predicted event probability and survival probability for treated
+# Expand baseline so it contains a visit at each time point for every individual
+tr_PP <- df_bs_new[rep(1:n, each = m),]
+tr_PP$visit_month <- rep(0:(m-1), times=n) 
+
+tr_PP %<>%
+  mutate(
+    # recreate squared visit term
+    visit_month2 = visit_month*visit_month, 
+    # Set the treatment assignment to '1' for each individual and
+    statin_yn_b = 1, 
+    # recreate the interaction terms
+    statin_init_t = statin_yn_b*visit_month,
+    statin_init_t2 = statin_yn_b*visit_month2
+  )
+
+
+tr_PP$p <- 1 - predict(wt_adj_plr_PP, newdata = tr_PP, type='response')
+
+
+# We calculate survival by taking the cumulative product by individual
+tr_PP <- tr_PP %>%
+  arrange(id, visit_month)%>%
+  group_by(id) %>%
+  mutate(s = cumprod(p))
+```
+
+
+```{r}
+# Create simulated data where everyone receives placebo
+ct_PP <- df_bs_new[rep(1:n, each = m),]
+ct_PP$visit_month <- rep(0:(m-1), times=n) 
+
+ct_PP %<>%
+  mutate(
+    # recreate squared visit term
+    visit_month2 = visit_month*visit_month, 
+    # Set the treatment assignment to '0' for each individual and
+    statin_yn_b = 0, 
+    # recreate the interaction terms
+    statin_init_t = statin_yn_b*visit_month,
+    statin_init_t2 = statin_yn_b*visit_month2
+  )
+
+
+ct_PP$p <- 1 - predict(wt_adj_plr_PP, newdata = ct_PP, type='response')
+
+# We calculate survival by taking the cumulative product by individual
+ct_PP <- ct_PP %>%
+  arrange(id, visit_month)%>%
+  group_by(id) %>%
+  mutate(s = cumprod(p))
+
+
+# Create concatenated dataset, only keep 
+both_PP <- bind_rows(tr_PP, ct_PP)
+both_PP <- both_PP[, c('s', 'statin_yn_b', 'visit_month')]
+
+# Calculate the mean survival at each visit within each treatment arm
+results_PP <- both_PP %>%
+  group_by(visit_month, statin_yn_b) %>%
+  summarise(mean_survival = mean(s)) %>% ungroup()
+```
+
+
+```{r}
+results_PP %<>% mutate(visit_month = visit_month + 1)
+
+results_PP <- bind_rows(c(visit_month = 0, statin_yn_b = 0, mean_survival =  1),
+                         c(visit_month = 0, statin_yn_b = 1, mean_survival =  1), results_PP)
+
+# Add a variable that treats randomization as a factor
+results_PP$init <- factor(results_PP$statin_yn_b, labels = c("No statins", "Statins"))
+results_PP %>% knitr::kable()
+```
+
+
+**Survival curve**
+
+```{r, fig.width=9, fig.height=6}
+#----- Counterfactual survival curve
+surv_plot_PP <- results_PP %>% 
+  ggplot(aes(x = visit_month, y = mean_survival)) +
+  geom_line(aes(colour = init)) +
+  scale_x_continuous(limits = c(0, 25), breaks=seq(0, 25, 2), expand = c(0, 0)) +
+  scale_y_continuous(limits = c(0.5, 1), expand = c(0, 0)) +
+  scale_color_manual(values = c("#08519c", "#c9060a")) +
+  labs(colour = NULL,
+       x = "Time (months)",
+       y = "ICH free probability") +
+  mytheme()
+
+surv_plot_PP
+
+png("PP_surv_curve_6m.png", units="in", width = 9, height = 6, res = 500)
+surv_plot_PP
+dev.off()
+```
+
+
+
+**Create summary statistics**
+
+```{r}
+# Transpose the data so survival in each treatment arm is separate
+wideres_PP <- results_PP %>% pivot_wider(id_cols = visit_month, 
+                                          names_from = init, 
+                                          values_from = mean_survival)
+
+wideres_PP %<>%
+  mutate(
+    RD = (1 - Treated) - (1 - Placebo),
+    logRatio = log(Treated)/log(Placebo),
+    CIR = (1 - Treated)/ (1 - Placebo)
+  )
+
+wideres_PP$logRatio[1] <- NA
+wideres_PP$cHR <- sapply(0:m, FUN = function(x){mean(wideres_PP$logRatio[wideres_PP$visit_month <= x], 
+                                                      na.rm=T)})
+
+wideres_PP %>% round(3) %>% knitr::kable()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
